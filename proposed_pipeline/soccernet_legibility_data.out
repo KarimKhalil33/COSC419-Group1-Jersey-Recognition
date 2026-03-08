@@ -1,0 +1,10 @@
+[OK] /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits/train_split.csv
+     -> /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_legibility/train_legibility.csv (kept=589454)
+     bad images: 5 -> /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_legibility/bad_train_images.txt
+[OK] /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits/val_split.csv
+     -> /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_legibility/val_legibility.csv (kept=143542)
+     bad images: 0 -> /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_legibility/bad_val_images.txt
+
+[DONE] Legibility CSVs created.
+  Train: /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_legibility/train_legibility.csv
+  Val  : /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_legibility/val_legibility.csv

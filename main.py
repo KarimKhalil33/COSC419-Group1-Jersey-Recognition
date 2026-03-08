@@ -381,7 +381,7 @@ if __name__ == '__main__':
                        "crops": True,
                        "str": True,
                        "combine": True,
-                       "eval": True}
+                       "eval": False}
             args.pipeline = actions
             soccer_net_pipeline(args)
         elif args.dataset == 'Hockey':

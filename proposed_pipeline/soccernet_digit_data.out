@@ -1,0 +1,10 @@
+[OK] /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits/train_split.csv
+     -> /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_digits/train_digits.csv (kept=448972)
+     bad images: 3 -> /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_digits/bad_train_images.txt
+[OK] /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits/val_split.csv
+     -> /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_digits/val_digits.csv (kept=111769)
+     bad images: 0 -> /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_digits/bad_val_images.txt
+
+[DONE] Digit-only CSVs created.
+  Train: /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_digits/train_digits.csv
+  Val  : /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_digits/val_digits.csv

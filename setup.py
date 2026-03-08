@@ -2,7 +2,7 @@ import os
 import configuration as cfg
 import json
 import urllib.request
-import gdown
+#import gdown
 import argparse
 
 
@@ -25,11 +25,17 @@ def get_conda_envs():
     stream = os.popen("conda env list")
     output = stream.read()
     a = output.split()
-    a.remove("*")
-    a.remove("#")
-    a.remove("#")
-    a.remove("conda")
-    a.remove("environments:")
+    if "*" in a:
+        a.remove("*")
+
+    if "#" in a:
+        a.remove("#")
+    if "#" in a:
+        a.remove("#")
+    if "conda" in a:
+        a.remove("conda")
+    if "environments:" in a:
+        a.remove("environments:")
     return a[::2]
 ###########################################
 
@@ -124,19 +130,20 @@ def download_models_common(root_dir):
         os.system(f"mkdir {models_folder_path}")
     save_path = os.path.join(rep_path, "ViTPose", "checkpoints", "vitpose-h.pth")
     if not os.path.isfile(save_path):
-        gdown.download(url, save_path)
+        #gdown.download(url, save_path)
+        a=0
 
 def download_models(root_dir, dataset):
     # download and save fine-tuned model
     save_path = os.path.join(root_dir, cfg.dataset[dataset]['str_model'])
     if not os.path.isfile(save_path):
         source_url = cfg.dataset[dataset]['str_model_url']
-        gdown.download(source_url, save_path)
+        #gdown.download(source_url, save_path)
 
     save_path = os.path.join(root_dir, cfg.dataset[dataset]['legibility_model'])
     if not os.path.isfile(save_path):
         source_url = cfg.dataset[dataset]['legibility_model_url']
-        gdown.download(source_url, save_path)
+        #gdown.download(source_url, save_path)
 
 def setup_sam(root_dir):
     os.chdir(root_dir)

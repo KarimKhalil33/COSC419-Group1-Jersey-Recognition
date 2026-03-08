@@ -1,0 +1,3 @@
+/scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/data/SoccerNet/jersey-2023/train/images/1/1_252.jpg
+/scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/data/SoccerNet/jersey-2023/train/images/1006/1006_19.jpg
+/scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/data/SoccerNet/jersey-2023/train/images/1104/1104_150.jpg

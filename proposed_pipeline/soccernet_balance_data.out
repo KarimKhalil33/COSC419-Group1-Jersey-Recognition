@@ -1,0 +1,7 @@
+[TRAIN] original distribution: Counter({0: 448972, -1: 140482})
+[TRAIN] balanced distribution: Counter({-1: 140482, 0: 140482})
+[VAL] untouched distribution: Counter({0: 111769, -1: 31773})
+
+[DONE]
+ Balanced train CSV: /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_legibility_balanced/train_legibility_balanced.csv
+ Validation CSV   : /scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/splits_legibility_balanced/val_legibility.csv

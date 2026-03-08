@@ -521,6 +521,11 @@ def identify_soccer_balls(image_dir, soccer_ball_list):
         for img_name in imgs:
             img_path = os.path.join(track_path, img_name)
             img = cv2.imread(img_path)
+
+            if img is None:
+                print(f"[WARNING] Could not read image: {img_path}")
+                continue
+
             h, w = img.shape[:2]
             width_list.append(w)
             height_list.append(h)
