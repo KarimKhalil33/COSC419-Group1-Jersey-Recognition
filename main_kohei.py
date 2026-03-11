@@ -47,10 +47,65 @@ CLAHE_CLIP            = 2.0
 CLAHE_GRID            = 8
 ADAPTIVE_LEG_FLOOR    = 0.50
 
-# ── New constants ──────────────────────────────────────────────────────────────
+# ── New constants (Added by Kohei) ──────────────────────────────────────────────────────────────
 SHARP_PREFILTER_MIN   = 15.0   # Laplacian var floor before legibility CNN
 CLAHE_MIN_DIM         = 32     # crops smaller than this (either axis) skip CLAHE
 MIN_TRACKLET_FRAMES   = 2      # fewer frames than this after filtering → illegible
+
+
+# ── Image-quality helpers ─────────────────────────────────────────────────────
+
+def _sharpness(img_bgr: np.ndarray) -> float:
+    """Variance of Laplacian on grayscale – higher is sharper."""
+    if img_bgr is None:
+        return 0.0
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def _rms_contrast(img_bgr: np.ndarray) -> float:
+    """Root-mean-square contrast (std of pixel intensities on grayscale)."""
+    if img_bgr is None:
+        return 0.0
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
+    return float(np.std(gray.astype(np.float32)))
+
+
+def _edge_density(img_bgr: np.ndarray) -> float:
+    """Fraction of pixels flagged as edges by Canny – structural detail proxy."""
+    if img_bgr is None:
+        return 0.0
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
+    edges = cv2.Canny(gray, threshold1=50, threshold2=150)
+    return float(np.count_nonzero(edges)) / max(edges.size, 1)
+
+
+def _multi_metric_score(img_bgr: np.ndarray) -> tuple:
+    """Return (sharpness, contrast, edge_density) raw values for one image."""
+    return _sharpness(img_bgr), _rms_contrast(img_bgr), _edge_density(img_bgr)
+
+
+def _normalise(arr: np.ndarray) -> np.ndarray:
+    """Min-max normalise to [0, 1]; returns uniform array if all equal."""
+    rng = arr.max() - arr.min()
+    if rng < 1e-9:
+        return np.ones_like(arr, dtype=float) / len(arr)
+    return (arr - arr.min()) / rng
+
+
+def _composite_scores(raw_metrics: list) -> np.ndarray:
+    """
+    Convert a list of (sharpness, contrast, edge_density) tuples into a
+    single composite quality score per frame using weighted blending after
+    per-metric min-max normalisation within the set.
+    """
+    arr = np.array(raw_metrics, dtype=float)  # shape (N, 3)
+    s_norm = _normalise(arr[:, 0])
+    c_norm = _normalise(arr[:, 1])
+    e_norm = _normalise(arr[:, 2])
+    return (QUALITY_W_SHARPNESS * s_norm
+            + QUALITY_W_CONTRAST  * c_norm
+            + QUALITY_W_EDGE      * e_norm)
 
 
 # ── Temporally-diverse window sampling ────────────────────────────────────────
