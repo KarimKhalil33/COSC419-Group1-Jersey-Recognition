@@ -253,7 +253,8 @@ def get_soccer_net_raw_legibility_results(args, use_filtered=True, filter='gauss
         track_results = lc.run(images_full_path,
                                config.dataset['SoccerNet']['legibility_model'],
                                threshold=-1,
-                               arch=config.dataset['SoccerNet']['legibility_model_arch'])
+                               arch=config.dataset['SoccerNet']['legibility_model_arch'],
+                               batch_size=args.legible_batch_size)
         results_dict[directory] = track_results
 
     full_legibile_path = os.path.join(config.dataset['SoccerNet']['working_dir'],
@@ -315,7 +316,8 @@ def get_soccer_net_legibility_results(args, use_filtered=False, filter='sim', ex
         track_results = lc.run(images_full_path,
                                config.dataset['SoccerNet']['legibility_model'],
                                arch=config.dataset['SoccerNet']['legibility_model_arch'],
-                               threshold=0.5)
+                               threshold=0.5,
+                               batch_size=args.legible_batch_size)
         legible = list(np.nonzero(track_results))[0]
         if len(legible) == 0:
             illegible_tracklets.append(directory)
@@ -431,7 +433,7 @@ def run_crop_legibility_classifier(crops_imgs_dir, model_path, output_path, thre
 
     if verbose:
         print(f"[CropLegible] loading model from: {model_path}")
-    model = lc.load_model(model_path)
+    
 
     crop_legible_results = {}
     nested_dirs = [d for d in os.listdir(crops_imgs_dir) if os.path.isdir(os.path.join(crops_imgs_dir, d))]
@@ -446,7 +448,13 @@ def run_crop_legibility_classifier(crops_imgs_dir, model_path, output_path, thre
                 continue
 
             images_full_path = [os.path.join(track_dir, x) for x in images]
-            scores = lc.infer(model, images_full_path)
+            scores = lc.run(
+                images_full_path,
+                model_path,
+                threshold=-1,
+                arch='resnet34',   # or pass this in as an argument
+                batch_size=128
+            )
             keep_mask = _score_to_keep_mask(scores, threshold=threshold)
 
             if prune_in_place:
@@ -473,7 +481,13 @@ def run_crop_legibility_classifier(crops_imgs_dir, model_path, output_path, thre
         for track in iterator:
             images = sorted(by_track[track])
             images_full_path = [os.path.join(crops_imgs_dir, x) for x in images]
-            scores = lc.infer(model, images_full_path)
+            scores = lc.run(
+                images_full_path,
+                model_path,
+                threshold=-1,
+                arch='resnet34',   # or pass this in as an argument
+                batch_size=128
+            )
             keep_mask = _score_to_keep_mask(scores, threshold=threshold)
 
             if prune_in_place:
@@ -594,7 +608,7 @@ def soccer_net_pipeline(args):
     if args.pipeline['feat'] and success:
         print("Generate features")
         #command = f"conda run -n {config.reid_env} python3 {config.reid_script} --tracklets_folder {image_dir} --output_folder {features_dir}"
-        command = f"conda run -n {config.reid_env} python3 {config.reid_script} --tracklets_folder {image_dir} --output_folder {features_dir} --batch_size 128"
+        command = f"conda run -n {config.reid_env} python3 {config.reid_script} --tracklets_folder {image_dir} --output_folder {features_dir} --batch_size 2048"
         success = os.system(command) == 0
         print("Done generating features")
 
@@ -654,9 +668,7 @@ def soccer_net_pipeline(args):
             if legible_results is None:
                 with open(full_legibile_path, "r") as outfile:
                     legible_results = json.load(outfile)
-            helpers.generate_crops(output_json, crops_destination_dir, legible_results)
-            if args.topk_crops > 0:
-                select_topk_crops_per_tracklet(crops_destination_dir, k=args.topk_crops, min_keep=1, verbose=True)
+            helpers.generate_crops(output_json, crops_destination_dir, legible_results,topk=args.topk_crops)
         except Exception as e:
             print(e)
             success = False
@@ -682,10 +694,6 @@ def soccer_net_pipeline(args):
         print("Predict numbers")
         image_dir_for_str = os.path.join(config.dataset['SoccerNet']['working_dir'],
                                          config.dataset['SoccerNet'][args.part]['crops_folder'])
-        if args.topk_crops > 0:
-            crops_imgs_dir = os.path.join(image_dir_for_str, 'imgs')
-            select_topk_crops_per_tracklet(crops_imgs_dir, k=args.topk_crops, min_keep=1, verbose=True)
-
         command = (
             f"conda run -n {config.str_env} python3 str.py {config.dataset['SoccerNet']['str_model']} "
             f"--data_root={image_dir_for_str} --batch_size={args.str_batch_size} --inference --result_file {str_result_file}"
@@ -730,8 +738,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('dataset', help="Options: 'SoccerNet', 'Hockey'")
     parser.add_argument('part', help="Options: 'test', 'val', 'train', 'challenge'")
-    parser.add_argument('--str_batch_size', type=int, default=64,
+    parser.add_argument('--str_batch_size', type=int, default=1,
                         help='Batch size for STR inference (higher = faster; adjust to GPU memory).')
+    parser.add_argument('--legible_batch_size', type=int, default=4,
+                    help='Batch size for legibility inference.')
     parser.add_argument('--topk_crops', type=int, default=0,
                         help='If >0, keep only top-K sharpest crops per tracklet before STR (speed + often accuracy).')
     parser.add_argument('--full_pipeline', action='store_true', default=False,
@@ -755,14 +765,14 @@ if __name__ == '__main__':
         if args.dataset == 'SoccerNet':
             if args.full_pipeline:
                 actions = {
-                    "soccer_ball_filter": False,
+                    "soccer_ball_filter": True,
                     "feat": True,
                     "filter": True,
                     "legible": True,
                     "legible_eval": False,
                     "pose": True,
                     "crops": True,
-                    "crop_legible": True,
+                    "crop_legible": False,  # the separate crop legibility stage didn't improve results in our experiments, so we disable it by default for speed. Enable with --crop_legible if you want to try it out.
                     "str": True,
                     "combine": True,
                     "eval": True,
@@ -776,7 +786,7 @@ if __name__ == '__main__':
                     "legible_eval": False,
                     "pose": False,
                     "crops": False,
-                    "crop_legible": True,
+                    "crop_legible": False,
                     "str": True,
                     "combine": True,
                     "eval": True,

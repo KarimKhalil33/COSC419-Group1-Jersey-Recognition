@@ -120,49 +120,7 @@ def generate_crops_for_all(json_file, crops_destination_dir):
         name = temp[-1]
         cv2.imwrite(os.path.join(crops_destination_dir, name), crop)
     return skipped, saved
-
-
-def get_mean_conf(points):
-    total = 0
-    for p in points:
-        total += p[2]
-    return total/len(points)
-
-
-def generate_crops_from_detections(det_path, crops_destination_dir, legible_results, images_dir):
-    all_legible = []
-    for key in legible_results.keys():
-        for entry in legible_results[key]:
-            all_legible.append(entry)
-    with open(det_path, 'r') as f:
-        bboxes = json.load(f)
-
-    for img_name in all_legible:
-        base_name = os.path.basename(img_name)
-        if not base_name in bboxes.keys():
-            continue
-        det = bboxes[base_name]
-        track = img_name.split('_')[0]
-        img_path = os.path.join(images_dir, track, img_name)
-        img = cv2.imread(img_path)
-        if img is None:
-            print(f"can't find {img_name}")
-            continue
-        height, width, _ = img.shape
-        x_min = det[0] - PADDING
-        x_max = det[2] + PADDING
-        y_min = det[1] - PADDING
-        y_max = det[3] + PADDING
-        x1 = int(0 if x_min < 0 else x_min)
-        y1 = int(0 if y_min < 0 else y_min)
-        x2 = int(width - 1 if x_max > width else x_max)
-        y2 = int(height -1 if y_max > height else y_max)
-        #print(x1,x2,y1,y2)
-        crop = img[y1:y2, x1:x2, :]
-        h, w, _ = crop.shape
-
-        cv2.imwrite(os.path.join(crops_destination_dir, base_name), crop)
-
+'''
 # crop torso based on joints and save cropped images
 def generate_crops(json_file, crops_destination_dir, legible_results, all_legible = None):
     if all_legible is None:
@@ -223,6 +181,148 @@ def generate_crops(json_file, crops_destination_dir, legible_results, all_legibl
         cv2.imwrite(os.path.join(crops_destination_dir, name), crop)
     print(f"skipped {misses} out of {len(all_poses)}")
     return skipped, saved
+'''
+def generate_crops(json_file, crops_destination_dir, legible_results, all_legible=None, topk=0):
+    """
+    NEW VERSION
+    Generate crops from pose results.
+
+    topk:
+        0  -> no top-k, keep all valid crops
+        >0 -> keep only top-k sharpest crops per tracklet
+    """
+
+    if all_legible is None:
+        all_legible = set()
+        for key in legible_results.keys():
+            for entry in legible_results[key]:
+                all_legible.add(os.path.basename(entry))
+    else:
+        all_legible = set(all_legible)
+
+    with open(json_file, 'r') as f:
+        all_poses = json.load(f)["pose_results"]
+
+    skipped = {}
+    saved = []
+    misses = 0
+
+    # tracklet -> list of (sharpness, crop_filename, crop_image, original_img_name)
+    candidates = {}
+
+    for entry in tqdm(all_poses):
+        img_name = entry["img_name"]
+        base_name = os.path.basename(img_name)
+
+        if base_name not in all_legible:
+            continue
+
+        filtered_points = get_points(entry)
+        tr = base_name.split('_')[0]
+
+        if len(filtered_points) == 0:
+            print(f"skipping {img_name}, unreliable points")
+            skipped[tr] = skipped.get(tr, 0) + 1
+            misses += 1
+            continue
+
+        img = cv2.imread(img_name)
+        if img is None:
+            print(f"can't find {img_name}")
+            skipped[tr] = skipped.get(tr, 0) + 1
+            misses += 1
+            continue
+
+        height, width, _ = img.shape
+        x_min = min([p[0] for p in filtered_points]) - PADDING
+        x_max = max([p[0] for p in filtered_points]) + PADDING
+        y_min = min([p[1] for p in filtered_points]) - PADDING
+        y_max = max([p[1] for p in filtered_points])
+
+        x1 = int(0 if x_min < 0 else x_min)
+        y1 = int(0 if y_min < 0 else y_min)
+        x2 = int(width - 1 if x_max > width else x_max)
+        y2 = int(height - 1 if y_max > height else y_max)
+
+        crop = img[y1:y2, x1:x2, :]
+        h, w, _ = crop.shape
+
+        if h == 0 or w == 0:
+            print(f"skipping {img_name}, shape is wrong")
+            skipped[tr] = skipped.get(tr, 0) + 1
+            misses += 1
+            continue
+
+        # no top-k: write immediately
+        if topk <= 0:
+            cv2.imwrite(os.path.join(crops_destination_dir, base_name), crop)
+            saved.append(img_name)
+            continue
+
+        # top-k enabled: score first, write later
+        score = cv2.Laplacian(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
+        if tr not in candidates:
+            candidates[tr] = []
+        candidates[tr].append((score, base_name, crop, img_name))
+
+    # write only best k per tracklet
+    if topk > 0:
+        kept_total = 0
+        for tr, items in candidates.items():
+            items.sort(key=lambda x: x[0], reverse=True)
+            keep = items[:topk]
+            kept_total += len(keep)
+            for _, base_name, crop, img_name in keep:
+                cv2.imwrite(os.path.join(crops_destination_dir, base_name), crop)
+                saved.append(img_name)
+        print(f"topk enabled: kept {kept_total} crops after in-generation pruning")
+
+    print(f"skipped {misses} out of {len(all_poses)}")
+    return skipped, saved
+
+
+def get_mean_conf(points):
+    total = 0
+    for p in points:
+        total += p[2]
+    return total/len(points)
+
+
+def generate_crops_from_detections(det_path, crops_destination_dir, legible_results, images_dir):
+    all_legible = []
+    for key in legible_results.keys():
+        for entry in legible_results[key]:
+            all_legible.append(entry)
+    with open(det_path, 'r') as f:
+        bboxes = json.load(f)
+
+    for img_name in all_legible:
+        base_name = os.path.basename(img_name)
+        if not base_name in bboxes.keys():
+            continue
+        det = bboxes[base_name]
+        track = img_name.split('_')[0]
+        img_path = os.path.join(images_dir, track, img_name)
+        img = cv2.imread(img_path)
+        if img is None:
+            print(f"can't find {img_name}")
+            continue
+        height, width, _ = img.shape
+        x_min = det[0] - PADDING
+        x_max = det[2] + PADDING
+        y_min = det[1] - PADDING
+        y_max = det[3] + PADDING
+        x1 = int(0 if x_min < 0 else x_min)
+        y1 = int(0 if y_min < 0 else y_min)
+        x2 = int(width - 1 if x_max > width else x_max)
+        y2 = int(height -1 if y_max > height else y_max)
+        #print(x1,x2,y1,y2)
+        crop = img[y1:y2, x1:x2, :]
+        h, w, _ = crop.shape
+
+        cv2.imwrite(os.path.join(crops_destination_dir, base_name), crop)
+
+
 
 def is_valid_number(string):
     if string == '-' or len(string) > 2:

@@ -81,8 +81,9 @@ def run_inference(model, data_root, result_file, img_size):
         image = Image.open(os.path.join(file_dir, filename)).convert('RGB')
         transform = SceneTextDataModule.get_transform(img_size)
         image = transform(image)
-        image = image.unsqueeze(0)
-        logits = model.forward(image.to(model.device))
+        image = image.unsqueeze(0).to(model.device, dtype=torch.float32)
+        #############################################
+        logits = model.forward(image)
         #convert to 3 by 10
         probs_full = logits[:,:3,:11].softmax(-1)
         preds, probs = model.tokenizer.decode(probs_full)
@@ -261,9 +262,10 @@ def main():
     kwargs.update({'charset_test': charset_test})
     print(f'Additional keyword arguments: {kwargs}')
 
-    model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
+    #model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
+    model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device).float()
     hp = model.hparams
-
+    
     if args.inference:
         run_inference(model, args.data_root, args.result_file, hp.img_size)
         exit()
