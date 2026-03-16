@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
-#SBATCH --time=24:00:00
+#SBATCH --time=1:00:00
 #SBATCH --gpus=1
 #SBATCH --output=./logs/two_stage_experiment_output.txt
 #SBATCH --error=./logs/two_stage_experiment_error.txt
@@ -17,14 +17,18 @@
 
 module load gcc
 module load cuda
+set -x
+date
+hostname
+which python
+python --version
 
+export TORCH_HOME=/scratch/st-li1210-1/yijun/.cache/torch
+export XDG_CACHE_HOME=/scratch/st-li1210-1/yijun/.cache
+export TORCH_HOME=/scratch/st-li1210-1/yijun/.cache/torch
+export LD_LIBRARY_PATH=/arc/home/yijun127/miniforge3/envs/parseq2/lib:$LD_LIBRARY_PATH
 
-export HOME=/scratch/st-li1210-1/yijun
-export XDG_CONFIG_HOME=$HOME/.config
-export MPLCONFIGDIR=$HOME/.config/matplotlib
-export WANDB_MODE=offline
+mkdir -p "$TORCH_HOME"
+mkdir -p "$XDG_CACHE_HOME"
 
-mkdir -p $XDG_CONFIG_HOME/Ultralytics
-mkdir -p $MPLCONFIGDIR
-
-python -u main_new.py SoccerNet test --full_pipeline --topk_crops 10 --crop_legible_prune --str_batch_size 128
+python -u main_new.py SoccerNet test --topk_crops 30 --str_batch_size 1024 --legible_batch_size 128

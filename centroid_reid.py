@@ -66,7 +66,7 @@ def _load_and_transform_image(full_img_path, val_transforms):
     return input_tensor
 
 
-def generate_features(input_folder, output_folder, model_version='res50_market', batch_size=64):
+def generate_features(input_folder, output_folder, model_version='res50_market', batch_size=1):
     # load model
     config_file, model_file = get_specs_from_version(model_version)
     cfg.merge_from_file(config_file)

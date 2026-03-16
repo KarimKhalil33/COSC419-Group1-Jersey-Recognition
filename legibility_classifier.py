@@ -422,9 +422,9 @@ def test_model(model, dataloaders, dataset_sizes, device, subset, result_path=No
     return epoch_acc
 
 
-def run(image_paths, model_path, threshold=0.5, arch='resnet18'):
+def run(image_paths, model_path, threshold=0.5, arch='resnet18',batch_size=4):
     dataset = UnlabelledJerseyNumberLegibilityDataset(image_paths, arch=arch)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=4,
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
                                              shuffle=False, num_workers=4)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     cudnn.benchmark = True
@@ -507,7 +507,7 @@ if __name__ == '__main__':
             'test',
             arch=args.arch
         )
-
+    
     dataloader_train = torch.utils.data.DataLoader(
         image_dataset_train,
         batch_size=4,
