@@ -46,16 +46,7 @@ print("[BOOT] cwd =", os.getcwd(), flush=True)
 #         filtering are labelled illegible immediately, before the CNN runs.
 #         Avoids loading images from disk for trivially short tracklets.
 #
-#   C. (removed) Sharpness pre-filter before legibility CNN
-#         Removed: pre-filter read all frames with cv2, then lc.run() read them
-#         again with PIL — double I/O with no net saving unless many frames were
-#         blurry enough to skip.
 #
-#   D. (removed) Adaptive legibility threshold
-#         Was: threshold = max(ADAPTIVE_LEG_FLOOR, median(raw_scores))
-#         Removed: high-confidence tracklets had high medians → threshold rose →
-#         good frames got filtered out (counterproductive).
-#         Now uses fixed ADAPTIVE_LEG_FLOOR threshold for all tracklets.
 # ─────────────────────────────────────────────────────────────────────────────
 
 

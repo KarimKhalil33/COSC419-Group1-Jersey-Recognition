@@ -23,4 +23,7 @@ export WANDB_MODE=offline
 mkdir -p $XDG_CONFIG_HOME/Ultralytics
 mkdir -p $MPLCONFIGDIR
 
+# Modifications active:
+#   A. Fused crop selection + CLAHE  (--max_windows, --use_clahe)
+#   B. Early exit for tiny tracklets (always on, no flag)
 python main_kohei.py SoccerNet test --full_pipeline --max_windows 10 --use_clahe --str_batch_size 64
