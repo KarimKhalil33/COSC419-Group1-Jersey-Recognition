@@ -11,6 +11,8 @@ import random
 import shutil
 from pathlib import Path
 from scipy.special import softmax as softmax
+import legibility_classifier as lc
+import tempfile
 
 json_img_template = { "id": 0,
             "file_name": "",
@@ -35,6 +37,99 @@ HEIGHT_MIN = 35
 WIDTH_MIN = 30
 
 bias_for_digits = [0.06, 0.094, 0.094, 0.094, 0.094, 0.094, 0.094, 0.094, 0.094, 0.094, 0.094]
+
+# Fused crop-selection / enhancement settings
+QUALITY_W_SHARPNESS = 0.50
+QUALITY_W_CONTRAST  = 0.30
+QUALITY_W_EDGE      = 0.20
+MIN_WINDOWS         = 2
+CLAHE_CLIP          = 2.0
+CLAHE_GRID          = 8
+CLAHE_MIN_DIM       = 32
+
+
+def _rms_contrast(img_bgr):
+    if img_bgr is None:
+        return 0.0
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
+    return float(np.std(gray.astype(np.float32)))
+
+
+def _edge_density(img_bgr):
+    if img_bgr is None:
+        return 0.0
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
+    edges = cv2.Canny(gray, 50, 150)
+    return float(np.count_nonzero(edges)) / max(edges.size, 1)
+
+
+def _multi_metric_score(img_bgr):
+    if img_bgr is None:
+        return 0.0, 0.0, 0.0
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    return sharpness, _rms_contrast(img_bgr), _edge_density(img_bgr)
+
+
+def _normalise(arr):
+    arr = np.asarray(arr, dtype=float)
+    if arr.size == 0:
+        return arr
+    rng = arr.max() - arr.min()
+    if rng < 1e-9:
+        return np.ones_like(arr, dtype=float) / max(len(arr), 1)
+    return (arr - arr.min()) / rng
+
+
+def _composite_scores(raw_metrics):
+    arr = np.array(raw_metrics, dtype=float)
+    if arr.size == 0:
+        return np.array([], dtype=float)
+    return (QUALITY_W_SHARPNESS * _normalise(arr[:, 0])
+            + QUALITY_W_CONTRAST  * _normalise(arr[:, 1])
+            + QUALITY_W_EDGE      * _normalise(arr[:, 2]))
+
+
+def _apply_clahe_if_needed(img_bgr):
+    if img_bgr is None:
+        return img_bgr
+    h, w = img_bgr.shape[:2]
+    if h < CLAHE_MIN_DIM or w < CLAHE_MIN_DIM:
+        return img_bgr
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=(CLAHE_GRID, CLAHE_GRID))
+    l_eq = clahe.apply(l)
+    lab_eq = cv2.merge((l_eq, a, b))
+    return cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
+
+
+def _select_window_indices(items, max_windows, min_keep=1):
+    n = len(items)
+    if n == 0:
+        return set()
+    if max_windows <= 0 or n <= 1:
+        return set(range(n))
+
+    raw_metrics = [it[3] for it in items]
+    scores = _composite_scores(raw_metrics)
+    w = max(MIN_WINDOWS, min(max_windows, n))
+    if n <= w:
+        keep = set(range(n))
+    else:
+        windows = np.array_split(np.arange(n), w)
+        keep = set()
+        for win in windows:
+            if len(win):
+                keep.add(int(win[np.argmax(scores[win])]))
+
+    while len(keep) < min(min_keep, n):
+        remaining = [i for i in range(n) if i not in keep]
+        if not remaining:
+            break
+        keep.add(remaining[int(np.argmax(scores[remaining]))])
+    return keep
+
 
 # Generate image JSON COCO format for ViTPose to consume
 def generate_json(file_names, json_file_path):
@@ -182,15 +277,12 @@ def generate_crops(json_file, crops_destination_dir, legible_results, all_legibl
     print(f"skipped {misses} out of {len(all_poses)}")
     return skipped, saved
 '''
-def generate_crops(json_file, crops_destination_dir, legible_results, all_legible=None, topk=0):
-    """
-    NEW VERSION
-    Generate crops from pose results.
+def generate_crops(json_file, crops_destination_dir, legible_results, all_legible=None,
+                   topk=0, crop_legibility=False, model_path="",
+                   use_clahe=False, max_windows=0):
 
-    topk:
-        0  -> no top-k, keep all valid crops
-        >0 -> keep only top-k sharpest crops per tracklet
-    """
+    if crop_legibility and not os.path.isfile(model_path):
+        raise FileNotFoundError(f"Crop legibility model not found: {model_path}")
 
     if all_legible is None:
         all_legible = set()
@@ -206,9 +298,20 @@ def generate_crops(json_file, crops_destination_dir, legible_results, all_legibl
     skipped = {}
     saved = []
     misses = 0
-
-    # tracklet -> list of (sharpness, crop_filename, crop_image, original_img_name)
     candidates = {}
+
+    needs_post_select = (topk > 0) or (max_windows > 0) or use_clahe
+
+    # for crop-legibility batch inference
+    pending_crop_paths = []
+    pending_crop_info = []   # (tr, base_name, img_name, crop, raw_metrics)
+
+    def _queue_candidate(tr, base_name, img_name, crop, raw_metrics):
+        if not needs_post_select:
+            cv2.imwrite(os.path.join(crops_destination_dir, base_name), crop)
+            saved.append(img_name)
+            return
+        candidates.setdefault(tr, []).append((base_name, crop, img_name, raw_metrics))
 
     for entry in tqdm(all_poses):
         img_name = entry["img_name"]
@@ -253,29 +356,72 @@ def generate_crops(json_file, crops_destination_dir, legible_results, all_legibl
             misses += 1
             continue
 
-        # no top-k: write immediately
-        if topk <= 0:
-            cv2.imwrite(os.path.join(crops_destination_dir, base_name), crop)
-            saved.append(img_name)
+        raw_metrics = _multi_metric_score(crop)
+
+        if crop_legibility:
+            tmp_path = os.path.join(crops_destination_dir, f"__tmp__{tr}_{len(pending_crop_paths)}_{base_name}")
+            cv2.imwrite(tmp_path, crop)
+            pending_crop_paths.append(tmp_path)
+            pending_crop_info.append((tr, base_name, img_name, crop, raw_metrics))
             continue
 
-        # top-k enabled: score first, write later
-        score = cv2.Laplacian(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-        if tr not in candidates:
-            candidates[tr] = []
-        candidates[tr].append((score, base_name, crop, img_name))
+        _queue_candidate(tr, base_name, img_name, crop, raw_metrics)
 
-    # write only best k per tracklet
-    if topk > 0:
+    # batch crop-legibility filtering
+    if crop_legibility and len(pending_crop_paths) > 0:
+        preds = lc.run(
+            pending_crop_paths,
+            model_path,
+            threshold=0.5,
+            arch='resnet34',
+            batch_size=128
+        )
+
+        for pred, tmp_path, info in zip(preds, pending_crop_paths, pending_crop_info):
+            tr, base_name, img_name, crop, raw_metrics = info
+
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+            if int(pred) != 1:
+                skipped[tr] = skipped.get(tr, 0) + 1
+                misses += 1
+                continue
+
+            _queue_candidate(tr, base_name, img_name, crop, raw_metrics)
+
+    # write final crops after in-memory selection / enhancement
+    if needs_post_select:
         kept_total = 0
+        removed_total = 0
         for tr, items in candidates.items():
-            items.sort(key=lambda x: x[0], reverse=True)
-            keep = items[:topk]
-            kept_total += len(keep)
-            for _, base_name, crop, img_name in keep:
-                cv2.imwrite(os.path.join(crops_destination_dir, base_name), crop)
+            items = sorted(items, key=lambda x: x[0])
+
+            keep_indices = _select_window_indices(items, max_windows=max_windows, min_keep=1)
+
+            if topk > 0 and len(keep_indices) > topk:
+                ranked = sorted(
+                    keep_indices,
+                    key=lambda idx: items[idx][3][0],
+                    reverse=True
+                )
+                keep_indices = set(ranked[:topk])
+
+            for idx, (base_name, crop, img_name, _) in enumerate(items):
+                if idx not in keep_indices:
+                    removed_total += 1
+                    continue
+
+                final_crop = _apply_clahe_if_needed(crop) if use_clahe else crop
+                cv2.imwrite(os.path.join(crops_destination_dir, base_name), final_crop)
                 saved.append(img_name)
-        print(f"topk enabled: kept {kept_total} crops after in-generation pruning")
+                kept_total += 1
+
+        if topk > 0 or max_windows > 0 or use_clahe:
+            print(
+                f"fused crop generation: kept {kept_total} crops, pruned {removed_total} "
+                f"(topk={topk}, max_windows={max_windows}, clahe={use_clahe})"
+            )
 
     print(f"skipped {misses} out of {len(all_poses)}")
     return skipped, saved

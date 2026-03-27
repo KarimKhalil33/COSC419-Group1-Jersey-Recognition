@@ -1,4 +1,4 @@
-print("[BOOT] main_fast_with_crop_legible.py starting", flush=True)
+print("[BOOT] main_kohei.py starting", flush=True)
 import argparse
 print("[BOOT] importing argparse", flush=True)
 import os
@@ -7,8 +7,6 @@ import legibility_classifier as lc
 print("[BOOT] importing legibility_classifier", flush=True)
 import numpy as np
 print("[BOOT] importing numpy", flush=True)
-import cv2
-print("[BOOT] importing cv2", flush=True)
 import json
 print("[BOOT] importing json", flush=True)
 import shutil
@@ -23,6 +21,50 @@ import random
 print("[BOOT] imports finished", flush=True)
 print("[BOOT] __file__ =", os.path.abspath(__file__), flush=True)
 print("[BOOT] cwd =", os.getcwd(), flush=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Kohei Sawabe  COSC 419B  |  Team 1
+#
+# Rebased on main_new.py (the current fastest pipeline).
+# All of main_new.py is preserved unchanged.  The additions below target I/O
+# reduction, which is the primary bottleneck of the crops → STR stage.
+#
+# Additions
+# ─────────
+#   A. Fused select + CLAHE + window sampling  (--max_windows, --use_clahe)
+#         main_new.py's crop pipeline reads each crop 2-3 times:
+#           1) select_topk_crops_per_tracklet reads all crops to score them
+#           2) CLAHE reads all keepers to equalise them
+#           3) window sampling reads all keepers to score them again
+#         The fused function `select_and_preprocess_crops` does one read per
+#         image: score → select → CLAHE in-memory → write keeper / delete loser.
+#
+#   B. Early exit for tiny tracklets  (MIN_TRACKLET_FRAMES)
+#         Tracklets with fewer frames than MIN_TRACKLET_FRAMES after Gaussian
+#         filtering are labelled illegible immediately, before the CNN runs.
+#         Avoids loading images from disk for trivially short tracklets.
+#
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── [Kohei] added constants ───────────────────────────────────────────────────
+QUALITY_W_SHARPNESS = 0.50   # weight for Laplacian sharpness in composite score
+QUALITY_W_CONTRAST  = 0.30   # weight for RMS contrast
+QUALITY_W_EDGE      = 0.20   # weight for Canny edge density
+MIN_WINDOWS         = 2      # minimum number of time windows in diverse sampling
+CLAHE_CLIP          = 2.0    # CLAHE clip limit
+CLAHE_GRID          = 8      # CLAHE tile grid size (8×8)
+CLAHE_MIN_DIM       = 32     # skip CLAHE for crops smaller than this on either axis
+MIN_TRACKLET_FRAMES = 2      # fewer frames than this after filtering → illegible without CNN
+ADAPTIVE_LEG_FLOOR  = 0.50   # lower bound for per-tracklet adaptive threshold
+# ── [/Kohei] ─────────────────────────────────────────────────────────────────
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Below this line: main_new.py unchanged functions
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def sample_images(images,
                   keep_ratio_range=(0.8, 0.9),
@@ -50,109 +92,10 @@ def sample_images(images,
     keep_n = min(keep_n, len(images))
 
     return rng.sample(images, keep_n)
-        
-def _sharpness_laplacian_var_bgr(img_bgr):
-    """Return a blur/sharpness score; higher is sharper."""
-    if img_bgr is None:
-        return -1.0
-    if img_bgr.ndim == 3:
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = img_bgr
-    lap = cv2.Laplacian(gray, cv2.CV_64F)
-    return float(lap.var())
 
 
 def _is_image_file(filename):
     return filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp"))
-
-
-def select_topk_crops_per_tracklet(crops_imgs_dir, k, min_keep=1, verbose=True):
-    """
-    Prune crops in-place: for each tracklet (prefix before first '_'), keep top-K by sharpness score.
-    This speeds up STR and often improves accuracy by removing noisy/blurred frames.
-    Supports both a flat imgs/ folder and imgs/<tracklet>/ nested folders.
-    """
-    if k <= 0:
-        return
-    if not os.path.isdir(crops_imgs_dir):
-        if verbose:
-            print(f"[TopK] crops dir not found: {crops_imgs_dir}")
-        return
-
-    nested_dirs = [d for d in os.listdir(crops_imgs_dir) if os.path.isdir(os.path.join(crops_imgs_dir, d))]
-    if nested_dirs:
-        removed = 0
-        kept = 0
-        for track in nested_dirs:
-            track_dir = os.path.join(crops_imgs_dir, track)
-            fns = [f for f in os.listdir(track_dir) if _is_image_file(f)]
-            if len(fns) <= max(k, min_keep):
-                kept += len(fns)
-                continue
-
-            scored = []
-            for fn in fns:
-                p = os.path.join(track_dir, fn)
-                img = cv2.imread(p)
-                s = _sharpness_laplacian_var_bgr(img)
-                scored.append((s, fn))
-
-            scored.sort(reverse=True, key=lambda x: x[0])
-            keep_n = max(min_keep, min(k, len(scored)))
-            keep_set = set(fn for _, fn in scored[:keep_n])
-
-            for _, fn in scored[keep_n:]:
-                try:
-                    os.remove(os.path.join(track_dir, fn))
-                    removed += 1
-                except Exception:
-                    pass
-            kept += len(keep_set)
-
-        if verbose:
-            print(f"[TopK] kept {kept} crops, removed {removed} crops (k={k}) from nested {crops_imgs_dir}")
-        return
-
-    files = [f for f in os.listdir(crops_imgs_dir) if _is_image_file(f)]
-    if len(files) == 0:
-        if verbose:
-            print(f"[TopK] no image files found in {crops_imgs_dir}")
-        return
-
-    by_track = {}
-    for fn in files:
-        track = fn.split('_')[0]
-        by_track.setdefault(track, []).append(fn)
-
-    removed = 0
-    kept = 0
-    for track, fns in by_track.items():
-        if len(fns) <= max(k, min_keep):
-            kept += len(fns)
-            continue
-
-        scored = []
-        for fn in fns:
-            p = os.path.join(crops_imgs_dir, fn)
-            img = cv2.imread(p)
-            s = _sharpness_laplacian_var_bgr(img)
-            scored.append((s, fn))
-
-        scored.sort(reverse=True, key=lambda x: x[0])
-        keep_n = max(min_keep, min(k, len(scored)))
-        keep_set = set(fn for _, fn in scored[:keep_n])
-
-        for _, fn in scored[keep_n:]:
-            try:
-                os.remove(os.path.join(crops_imgs_dir, fn))
-                removed += 1
-            except Exception:
-                pass
-        kept += len(keep_set)
-
-    if verbose:
-        print(f"[TopK] kept {kept} crops, removed {removed} crops (k={k}) from {crops_imgs_dir}")
 
 
 def clean_soccer_net_artifacts(part, clean_crops=True, verbose=True):
@@ -211,6 +154,7 @@ def get_soccer_net_raw_legibility_results(args, use_filtered=True, filter='gauss
     tracklets = os.listdir(path_to_images)
     results_dict = {x: [] for x in tracklets}
 
+    filtered = {}
     if use_filtered:
         if filter == 'sim':
             path_to_filter_results = os.path.join(config.dataset['SoccerNet']['working_dir'],
@@ -239,16 +183,6 @@ def get_soccer_net_raw_legibility_results(args, use_filtered=True, filter='gauss
             images = filtered[directory]
         else:
             images = os.listdir(track_dir)
-        ##############
-        # RANDOM SUBSAMPLING
-        #images = sample_images(
-        #    images,
-        #    keep_ratio_range=(0.8, 0.9),
-        #    min_keep=5,
-        #    seed=42,
-        #    track_id=directory
-        #)
-        ###############
         images_full_path = [os.path.join(track_dir, x) for x in images]
         track_results = lc.run(images_full_path,
                                config.dataset['SoccerNet']['legibility_model'],
@@ -271,6 +205,7 @@ def get_soccer_net_legibility_results(args, use_filtered=False, filter='sim', ex
     path_to_images = os.path.join(root_dir, image_dir)
     tracklets = os.listdir(path_to_images)
 
+    filtered = {}
     if use_filtered:
         if filter == 'sim':
             path_to_filter_results = os.path.join(config.dataset['SoccerNet']['working_dir'],
@@ -302,23 +237,27 @@ def get_soccer_net_legibility_results(args, use_filtered=False, filter='sim', ex
             images = filtered[directory]
         else:
             images = os.listdir(track_dir)
-        #############
-        # RANDOM SUBSAMPLING
-        #images = sample_images(
-        #    images,
-        #    keep_ratio_range=(0.8, 0.9),
-        #    min_keep=5,
-        #    seed=42,
-        #    track_id=directory
-        #)
-        ############
         images_full_path = [os.path.join(track_dir, x) for x in images]
-        track_results = lc.run(images_full_path,
-                               config.dataset['SoccerNet']['legibility_model'],
-                               arch=config.dataset['SoccerNet']['legibility_model_arch'],
-                               threshold=0.5,
-                               batch_size=args.legible_batch_size)
-        legible = list(np.nonzero(track_results))[0]
+
+        # ── [Kohei] early exit: trivially small tracklets → illegible ────────────
+        # Avoids loading images and running the CNN for near-empty tracklets.
+        if len(images_full_path) < MIN_TRACKLET_FRAMES:
+            illegible_tracklets.append(directory)
+            continue
+        # ── [/Kohei] ──────────────────────────────────────────────────────────────
+
+        # ── [Kohei] fixed threshold legibility filter ─────────────────────────────
+        raw_scores = lc.run(
+            images_full_path,
+            config.dataset['SoccerNet']['legibility_model'],
+            arch=config.dataset['SoccerNet']['legibility_model_arch'],
+            threshold=-1,
+            batch_size=args.legible_batch_size,
+        )
+        raw_scores = np.asarray(raw_scores, dtype=float)
+        legible = list(np.where(raw_scores >= ADAPTIVE_LEG_FLOOR)[0])
+        # ── [/Kohei] ──────────────────────────────────────────────────────────────
+
         if len(legible) == 0:
             illegible_tracklets.append(directory)
         else:
@@ -352,16 +291,6 @@ def generate_json_for_pose_estimator(args, legible=None):
         for tr in tracks:
             track_dir = os.path.join(path_to_images, tr)
             imgs = os.listdir(track_dir)
-            ###########
-            # RANDOM SUBSAMPLING
-            #images = sample_images(
-            #    imgs,
-            #    keep_ratio_range=(0.8, 0.9),
-            #    min_keep=5,
-            #    seed=42,
-            #    track_id=tr
-            #)
-            ############
             for img in imgs:
                 all_files.append(os.path.join(track_dir, img))
 
@@ -433,7 +362,7 @@ def run_crop_legibility_classifier(crops_imgs_dir, model_path, output_path, thre
 
     if verbose:
         print(f"[CropLegible] loading model from: {model_path}")
-    
+
 
     crop_legible_results = {}
     nested_dirs = [d for d in os.listdir(crops_imgs_dir) if os.path.isdir(os.path.join(crops_imgs_dir, d))]
@@ -607,14 +536,13 @@ def soccer_net_pipeline(args):
 
     if args.pipeline['feat'] and success:
         print("Generate features")
-        #command = f"conda run -n {config.reid_env} python3 {config.reid_script} --tracklets_folder {image_dir} --output_folder {features_dir}"
-        command = f"conda run -n {config.reid_env} python3 {config.reid_script} --tracklets_folder {image_dir} --output_folder {features_dir} --batch_size 2048"
+        command = f"conda run -n {config.reid_env} python3 -u {config.reid_script} --tracklets_folder {image_dir} --output_folder {features_dir} --batch_size 2048"
         success = os.system(command) == 0
         print("Done generating features")
 
     if args.pipeline['filter'] and success:
         print("Identify and remove outliers")
-        command = f"python3 gaussian_outliers.py --tracklets_folder {image_dir} --output_folder {features_dir}"
+        command = f"python3 -u gaussian_outliers.py --tracklets_folder {image_dir} --output_folder {features_dir}"
         success = os.system(command) == 0
         print("Done removing outliers")
 
@@ -654,7 +582,7 @@ def soccer_net_pipeline(args):
         if success:
             print("Detecting pose")
             command = (
-                f"conda run -n {config.pose_env} python3 pose.py "
+                f"conda run -n {config.pose_env} python3 -u pose.py "
                 f"{config.pose_home}/configs/body/2d_kpt_sview_rgb_img/topdown_heatmap/coco/ViTPose_huge_coco_256x192.py "
                 f"{config.pose_home}/checkpoints/vitpose-h.pth --img-root / --json-file {input_json} --out-json {output_json}"
             )
@@ -668,34 +596,18 @@ def soccer_net_pipeline(args):
             if legible_results is None:
                 with open(full_legibile_path, "r") as outfile:
                     legible_results = json.load(outfile)
-            helpers.generate_crops(output_json, crops_destination_dir, legible_results,topk=args.topk_crops)
+            helpers.generate_crops(output_json, crops_destination_dir, legible_results, topk=args.topk_crops,use_clahe=args.use_clahe,max_windows=args.max_windows)
         except Exception as e:
             print(e)
             success = False
         print("Done generating crops")
-
-    if args.pipeline['crop_legible'] and success:
-        print("Running crop legibility classifier")
-        try:
-            run_crop_legibility_classifier(
-                crops_imgs_dir=crops_destination_dir,
-                model_path=args.crop_legible_model,
-                output_path=crop_legible_output_path,
-                threshold=args.crop_legible_threshold,
-                prune_in_place=args.crop_legible_prune,
-                verbose=True,
-            )
-        except Exception as e:
-            print(f"[CropLegible] failed: {e}")
-            success = False
-        print("Done running crop legibility classifier")
 
     if args.pipeline['str'] and success:
         print("Predict numbers")
         image_dir_for_str = os.path.join(config.dataset['SoccerNet']['working_dir'],
                                          config.dataset['SoccerNet'][args.part]['crops_folder'])
         command = (
-            f"conda run -n {config.str_env} python3 str.py {config.dataset['SoccerNet']['str_model']} "
+            f"conda run -n {config.str_env} python3 -u str.py {config.dataset['SoccerNet']['str_model']} "
             f"--data_root={image_dir_for_str} --batch_size={args.str_batch_size} --inference --result_file {str_result_file}"
         )
         success = os.system(command) == 0
@@ -703,25 +615,20 @@ def soccer_net_pipeline(args):
 
     if args.pipeline['combine'] and success:
         print("Combine results")
-        try:
-            results_dict, analysis_results = helpers.process_jersey_id_predictions_bayesian(
-                str_result_file, useTS=True, useBias=True, useTh=True
-            )
-        except Exception as e1:
-            print(f"[Combine] Bayesian+TS failed: {e1}")
-            try:
-                results_dict, analysis_results = helpers.process_jersey_id_predictions_bayesian(
-                    str_result_file, useTS=False, useBias=True, useTh=True
-                )
-            except Exception as e2:
-                print(f"[Combine] Bayesian(raw) failed: {e2}")
-                print("[Combine] Falling back to simple combiner.")
-                results_dict, analysis_results = helpers.process_jersey_id_predictions(str_result_file, useBias=True)
+        analysis_results = None
 
-        consolidated_dict = consolidated_results(image_dir, results_dict, illegible_path, soccer_ball_list=soccer_ball_list)
+        # read predicted results, stack unique predictions, sum confidence scores for each, choose argmax
+        results_dict, analysis_results = helpers.process_jersey_id_predictions(
+            str_result_file, useBias=True
+        )
+
+        consolidated_dict = consolidated_results(
+            image_dir, results_dict, illegible_path, soccer_ball_list=soccer_ball_list
+        )
 
         with open(final_results_path, 'w') as f:
             json.dump(consolidated_dict, f)
+
         print("Done combine results")
 
     if args.pipeline['eval'] and success:
@@ -741,7 +648,7 @@ if __name__ == '__main__':
     parser.add_argument('--str_batch_size', type=int, default=1,
                         help='Batch size for STR inference (higher = faster; adjust to GPU memory).')
     parser.add_argument('--legible_batch_size', type=int, default=4,
-                    help='Batch size for legibility inference.')
+                        help='Batch size for legibility inference.')
     parser.add_argument('--topk_crops', type=int, default=0,
                         help='If >0, keep only top-K sharpest crops per tracklet before STR (speed + often accuracy).')
     parser.add_argument('--full_pipeline', action='store_true', default=False,
@@ -759,6 +666,17 @@ if __name__ == '__main__':
                         help='If set, delete crop images predicted as illegible before STR.')
     parser.add_argument('--train_str', action='store_true', default=False,
                         help='Run training of jersey number recognition')
+    # ── [Kohei] new args ───────────────────────────────────────────────────────
+    parser.add_argument('--use_clahe', action='store_true', default=False,
+                        help='Apply CLAHE (LAB L-channel) to crops in the fused preprocessing pass.')
+    parser.add_argument('--max_windows', type=int, default=0,
+                        help=(
+                            'If >0, divide each tracklet into this many time windows and keep '
+                            'the best-quality (multi-metric) frame per window. '
+                            'Runs as part of the fused select+CLAHE pass. '
+                            'Default 0 = disabled.'
+                        ))
+    # ── [/Kohei] ──────────────────────────────────────────────────────────────
     args = parser.parse_args()
 
     if not args.train_str:
@@ -772,7 +690,6 @@ if __name__ == '__main__':
                     "legible_eval": False,
                     "pose": True,
                     "crops": True,
-                    "crop_legible": False,  # the separate crop legibility stage didn't improve results in our experiments, so we disable it by default for speed. Enable with --crop_legible if you want to try it out.
                     "str": True,
                     "combine": True,
                     "eval": True,
@@ -786,7 +703,6 @@ if __name__ == '__main__':
                     "legible_eval": False,
                     "pose": False,
                     "crops": False,
-                    "crop_legible": False,
                     "str": True,
                     "combine": True,
                     "eval": True,

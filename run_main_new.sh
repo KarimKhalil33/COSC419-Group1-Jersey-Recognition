@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
-#SBATCH --time=1:00:00
+#SBATCH --time=24:00:00
 #SBATCH --gpus=1
 #SBATCH --output=./logs/two_stage_experiment_output.txt
 #SBATCH --error=./logs/two_stage_experiment_error.txt
@@ -31,4 +31,4 @@ export LD_LIBRARY_PATH=/arc/home/yijun127/miniforge3/envs/parseq2/lib:$LD_LIBRAR
 mkdir -p "$TORCH_HOME"
 mkdir -p "$XDG_CACHE_HOME"
 
-python -u main_new.py SoccerNet test --topk_crops 30 --str_batch_size 1024 --legible_batch_size 128
+python -u main_new.py SoccerNet test --full_pipeline --clean --max_windows 10 --str_batch_size 512 --legible_batch_size 4 --use_clahe 

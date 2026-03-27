@@ -2,7 +2,7 @@ import json
 import argparse
 import sys
 
-def evaluate(prediction_path="/scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/proposed_pipeline/runs_final_pipeline/test_new_pred_final.json", ground_truth_path="/scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/data/SoccerNet/jersey-2023/test/test_gt.json"):
+def evaluate(prediction_path="/scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/Demo/final_results.json", ground_truth_path="/scratch/st-li1210-1/yijun/519Project/jersey-number-pipeline/data/SoccerNet/jersey-2023/test/test_gt.json"):
     # 1. Load Ground Truth
     try:
         with open(ground_truth_path, 'r') as f:

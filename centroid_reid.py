@@ -93,12 +93,13 @@ def generate_features(input_folder, output_folder, model_version='res50_market',
     tracks = sorted(os.listdir(input_folder))
     transforms_base = ReidTransforms(cfg)
     val_transforms = transforms_base.build_transforms(is_train=False)
-
+    
+    import sys
     for track in tqdm(tracks):
         track_path = os.path.join(input_folder, track)
         if not os.path.isdir(track_path):
             continue
-
+        sys.stdout.flush()  # ensure tqdm output is not buffered
         images = sorted([x for x in os.listdir(track_path) if _is_image_file(x)])
         output_file = os.path.join(output_folder, f"{track}_features.npy")
 
