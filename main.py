@@ -1,4 +1,4 @@
-print("[BOOT] main_kohei.py starting", flush=True)
+print("[BOOT] main.py starting", flush=True)
 import argparse
 print("[BOOT] importing argparse", flush=True)
 import os
@@ -22,33 +22,6 @@ print("[BOOT] imports finished", flush=True)
 print("[BOOT] __file__ =", os.path.abspath(__file__), flush=True)
 print("[BOOT] cwd =", os.getcwd(), flush=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Kohei Sawabe  COSC 419B  |  Team 1
-#
-# Rebased on main_new.py (the current fastest pipeline).
-# All of main_new.py is preserved unchanged.  The additions below target I/O
-# reduction, which is the primary bottleneck of the crops → STR stage.
-#
-# Additions
-# ─────────
-#   A. Fused select + CLAHE + window sampling  (--max_windows, --use_clahe)
-#         main_new.py's crop pipeline reads each crop 2-3 times:
-#           1) select_topk_crops_per_tracklet reads all crops to score them
-#           2) CLAHE reads all keepers to equalise them
-#           3) window sampling reads all keepers to score them again
-#         The fused function `select_and_preprocess_crops` does one read per
-#         image: score → select → CLAHE in-memory → write keeper / delete loser.
-#
-#   B. Early exit for tiny tracklets  (MIN_TRACKLET_FRAMES)
-#         Tracklets with fewer frames than MIN_TRACKLET_FRAMES after Gaussian
-#         filtering are labelled illegible immediately, before the CNN runs.
-#         Avoids loading images from disk for trivially short tracklets.
-#
-#
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-# ── [Kohei] added constants ───────────────────────────────────────────────────
 QUALITY_W_SHARPNESS = 0.50   # weight for Laplacian sharpness in composite score
 QUALITY_W_CONTRAST  = 0.30   # weight for RMS contrast
 QUALITY_W_EDGE      = 0.20   # weight for Canny edge density
@@ -58,13 +31,7 @@ CLAHE_GRID          = 8      # CLAHE tile grid size (8×8)
 CLAHE_MIN_DIM       = 32     # skip CLAHE for crops smaller than this on either axis
 MIN_TRACKLET_FRAMES = 2      # fewer frames than this after filtering → illegible without CNN
 ADAPTIVE_LEG_FLOOR  = 0.50   # lower bound for per-tracklet adaptive threshold
-# ── [/Kohei] ─────────────────────────────────────────────────────────────────
 
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Below this line: main_new.py unchanged functions
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def sample_images(images,
                   keep_ratio_range=(0.8, 0.9),
@@ -239,14 +206,12 @@ def get_soccer_net_legibility_results(args, use_filtered=False, filter='sim', ex
             images = os.listdir(track_dir)
         images_full_path = [os.path.join(track_dir, x) for x in images]
 
-        # ── [Kohei] early exit: trivially small tracklets → illegible ────────────
-        # Avoids loading images and running the CNN for near-empty tracklets.
+
         if len(images_full_path) < MIN_TRACKLET_FRAMES:
             illegible_tracklets.append(directory)
             continue
-        # ── [/Kohei] ──────────────────────────────────────────────────────────────
 
-        # ── [Kohei] fixed threshold legibility filter ─────────────────────────────
+
         raw_scores = lc.run(
             images_full_path,
             config.dataset['SoccerNet']['legibility_model'],
@@ -256,7 +221,6 @@ def get_soccer_net_legibility_results(args, use_filtered=False, filter='sim', ex
         )
         raw_scores = np.asarray(raw_scores, dtype=float)
         legible = list(np.where(raw_scores >= ADAPTIVE_LEG_FLOOR)[0])
-        # ── [/Kohei] ──────────────────────────────────────────────────────────────
 
         if len(legible) == 0:
             illegible_tracklets.append(directory)
@@ -666,7 +630,6 @@ if __name__ == '__main__':
                         help='If set, delete crop images predicted as illegible before STR.')
     parser.add_argument('--train_str', action='store_true', default=False,
                         help='Run training of jersey number recognition')
-    # ── [Kohei] new args ───────────────────────────────────────────────────────
     parser.add_argument('--use_clahe', action='store_true', default=False,
                         help='Apply CLAHE (LAB L-channel) to crops in the fused preprocessing pass.')
     parser.add_argument('--max_windows', type=int, default=0,
@@ -676,7 +639,6 @@ if __name__ == '__main__':
                             'Runs as part of the fused select+CLAHE pass. '
                             'Default 0 = disabled.'
                         ))
-    # ── [/Kohei] ──────────────────────────────────────────────────────────────
     args = parser.parse_args()
 
     if not args.train_str:
